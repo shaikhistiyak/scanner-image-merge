@@ -4,3 +4,4 @@ dist
 temp
 *.jpg
 *__pycache__
+logs

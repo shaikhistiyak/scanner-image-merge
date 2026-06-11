@@ -5,11 +5,32 @@ except ImportError:
     win32com = None
     pythoncom = None
 
+from contextlib import contextmanager
 from datetime import datetime
 from utils.config import TEMP_DIR, WIA_COLOR_MAP
 from utils.logger import get_logger
 
 logger = get_logger(__name__)
+
+
+@contextmanager
+def com_context():
+    """
+    Initialize COM for the current thread while using WIA.
+
+    PyQt worker threads do not inherit COM initialization from the main UI
+    thread, so every thread that talks to WIA must initialize it first.
+    """
+    initialized = False
+    if pythoncom is not None:
+        pythoncom.CoInitialize()
+        initialized = True
+
+    try:
+        yield
+    finally:
+        if initialized:
+            pythoncom.CoUninitialize()
 
 
 class ScannerService:
@@ -23,16 +44,23 @@ class ScannerService:
             return self.scanners
 
         try:
-            device_manager = win32com.client.Dispatch("WIA.DeviceManager")
-            for device in device_manager.DeviceInfos:
+            with com_context():
+                device_manager = None
+                device = None
                 try:
-                    if device.Type == 1:
-                        self.scanners.append({
-                            "name": device.Properties("Name").Value,
-                            "device_id": device.DeviceID,
-                        })
-                except Exception as exc:
-                    logger.debug("Skipping WIA device during detection: %s", exc)
+                    device_manager = win32com.client.Dispatch("WIA.DeviceManager")
+                    for device in device_manager.DeviceInfos:
+                        try:
+                            if device.Type == 1:
+                                self.scanners.append({
+                                    "name": device.Properties("Name").Value,
+                                    "device_id": device.DeviceID,
+                                })
+                        except Exception as exc:
+                            logger.debug("Skipping WIA device during detection: %s", exc)
+                finally:
+                    device = None
+                    device_manager = None
         except Exception:
             logger.exception("Scanner detection error")
 
@@ -67,51 +95,55 @@ class ScannerService:
         if scanner is None:
             raise ValueError(f"Scanner not found: {scanner_name}")
 
-        com_initialized = False
         try:
-            if pythoncom is not None:
-                pythoncom.CoInitialize()
-                com_initialized = True
+            with com_context():
+                device_manager = None
+                device = None
+                info = None
+                item = None
+                image = None
+                try:
+                    device_manager = win32com.client.Dispatch("WIA.DeviceManager")
+                    for info in device_manager.DeviceInfos:
+                        if info.DeviceID == scanner["device_id"]:
+                            device = info.Connect()
+                            break
 
-            device_manager = win32com.client.Dispatch("WIA.DeviceManager")
-            device = None
-            for info in device_manager.DeviceInfos:
-                if info.DeviceID == scanner["device_id"]:
-                    device = info.Connect()
-                    break
+                    if device is None:
+                        raise RuntimeError("Unable to connect to scanner.")
 
-            if device is None:
-                raise RuntimeError("Unable to connect to scanner.")
+                    item = device.Items[1]
 
-            item = device.Items[1]
+                    try:
+                        item.Properties("Horizontal Resolution").Value = dpi
+                        item.Properties("Vertical Resolution").Value = dpi
+                        logger.info("DPI set to %s", dpi)
+                    except Exception as exc:
+                        logger.warning("Could not set DPI: %s", exc)
 
-            try:
-                item.Properties("Horizontal Resolution").Value = dpi
-                item.Properties("Vertical Resolution").Value = dpi
-                logger.info("DPI set to %s", dpi)
-            except Exception as exc:
-                logger.warning("Could not set DPI: %s", exc)
+                    try:
+                        wia_intent = WIA_COLOR_MAP.get(color_mode, 1)
+                        item.Properties("Current Intent").Value = wia_intent
+                        logger.info("Color mode set to %s (WIA intent %s)", color_mode, wia_intent)
+                    except Exception as exc:
+                        logger.warning("Could not set color mode: %s", exc)
 
-            try:
-                wia_intent = WIA_COLOR_MAP.get(color_mode, 1)
-                item.Properties("Current Intent").Value = wia_intent
-                logger.info("Color mode set to %s (WIA intent %s)", color_mode, wia_intent)
-            except Exception as exc:
-                logger.warning("Could not set color mode: %s", exc)
+                    image = item.Transfer()
 
-            image = item.Transfer()
+                    TEMP_DIR.mkdir(parents=True, exist_ok=True)
+                    file_name = f"scan_{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}.jpg"
+                    output_path = TEMP_DIR / file_name
+                    image.SaveFile(str(output_path))
 
-            TEMP_DIR.mkdir(parents=True, exist_ok=True)
-            file_name = f"scan_{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}.jpg"
-            output_path = TEMP_DIR / file_name
-            image.SaveFile(str(output_path))
-
-            logger.info("Scan saved: %s", output_path)
-            return str(output_path)
+                    logger.info("Scan saved: %s", output_path)
+                    return str(output_path)
+                finally:
+                    image = None
+                    item = None
+                    info = None
+                    device = None
+                    device_manager = None
 
         except Exception as exc:
             logger.exception("Scan failed")
             raise RuntimeError(f"Scan failed: {exc}")
-        finally:
-            if com_initialized:
-                pythoncom.CoUninitialize()
