@@ -1,7 +1,7 @@
 import cv2
 import numpy as np
-from PyQt6.QtGui import QImage, QPixmap
-from PyQt6.QtCore import Qt
+from PyQt5.QtGui import QImage, QPixmap
+from PyQt5.QtCore import Qt
 
 
 def numpy_to_pixmap(image: np.ndarray) -> QPixmap:
@@ -18,7 +18,7 @@ def numpy_to_pixmap(image: np.ndarray) -> QPixmap:
 
     h, w, ch = rgb.shape
     bytes_per_line = ch * w
-    qt_image = QImage(rgb.data, w, h, bytes_per_line, QImage.Format.Format_RGB888)
+    qt_image = QImage(rgb.data, w, h, bytes_per_line, QImage.Format_RGB888)
     return QPixmap.fromImage(qt_image)
 
 
@@ -30,8 +30,8 @@ def pixmap_thumbnail(file_path: str, size: tuple) -> QPixmap:
     return pixmap.scaled(
         size[0],
         size[1],
-        Qt.AspectRatioMode.KeepAspectRatio,
-        Qt.TransformationMode.SmoothTransformation,
+        Qt.KeepAspectRatio,
+        Qt.SmoothTransformation,
     )
 
 

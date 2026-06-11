@@ -12,15 +12,22 @@ class CameraService:
     def get_cameras(self):
         cameras = []
         for index in range(10):
-            cap = cv2.VideoCapture(index)
-            if cap.isOpened():
-                cameras.append(f"Camera {index}")
+            cap = cv2.VideoCapture(index, cv2.CAP_DSHOW)
+            try:
+                if cap.isOpened():
+                    cameras.append(f"Camera {index}")
+            finally:
                 cap.release()
         return cameras
 
     def start_camera(self, index=0):
-        self.cap = cv2.VideoCapture(index)
-        logger.info(f"Camera {index} started")
+        self.stop_camera()
+        self.cap = cv2.VideoCapture(index, cv2.CAP_DSHOW)
+        if not self.cap.isOpened():
+            self.cap.release()
+            self.cap = None
+            raise RuntimeError(f"Unable to open camera {index}")
+        logger.info("Camera %s started", index)
 
     def read_frame(self):
         if self.cap is None:

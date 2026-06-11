@@ -1,61 +1,82 @@
-import shutil
 from pathlib import Path
+from PIL import Image, ImageOps
 from utils.logger import get_logger
 
 logger = get_logger(__name__)
 
 
 class ExportService:
-
     def export_image(self, source_path: str, destination_path: str):
-        """Copy image to destination."""
-        shutil.copy2(source_path, destination_path)
-        logger.info(f"Exported image: {destination_path}")
+        """Export an image and encode it to match the destination extension."""
+        source = Path(source_path)
+        destination = Path(destination_path)
+
+        if not source.exists():
+            raise FileNotFoundError(f"Source image not found: {source_path}")
+
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        suffix = destination.suffix.lower()
+        if not suffix:
+            destination = destination.with_suffix(source.suffix or ".jpg")
+            suffix = destination.suffix.lower()
+
+        image_format = self._format_from_suffix(suffix)
+        with Image.open(source) as image:
+            image = ImageOps.exif_transpose(image)
+            if image_format in ("JPEG", "PDF") and image.mode in ("RGBA", "LA", "P"):
+                image = image.convert("RGB")
+            save_options = {"quality": 95} if image_format == "JPEG" else {}
+            image.save(destination, format=image_format, **save_options)
+
+        logger.info("Exported image: %s", destination)
 
     def export_pdf(self, source_paths: list, destination_path: str):
         """
         Export one or more images as a single PDF.
         Each image becomes one page in the PDF.
         """
-        try:
-            import img2pdf
-        except ImportError:
-            raise RuntimeError(
-                "img2pdf is not installed. Run: pip install img2pdf"
-            )
+        destination = Path(destination_path)
+        if destination.suffix.lower() != ".pdf":
+            destination = destination.with_suffix(".pdf")
+        destination.parent.mkdir(parents=True, exist_ok=True)
 
-        valid_paths = [p for p in source_paths if Path(p).exists()]
+        valid_paths = [Path(path) for path in source_paths if Path(path).exists()]
         if not valid_paths:
             raise ValueError("No valid image files found for PDF export.")
 
-        # img2pdf requires JPEG or PNG — convert if needed
-        processed = self._prepare_for_pdf(valid_paths)
+        pages = []
+        try:
+            for path in valid_paths:
+                image = Image.open(path)
+                image = ImageOps.exif_transpose(image)
+                if image.mode != "RGB":
+                    image = image.convert("RGB")
+                pages.append(image)
 
-        with open(destination_path, "wb") as f:
-            f.write(img2pdf.convert(processed))
+            first_page = pages[0]
+            first_page.save(
+                destination,
+                "PDF",
+                resolution=300.0,
+                save_all=True,
+                append_images=pages[1:],
+            )
+        finally:
+            for page in pages:
+                page.close()
 
-        logger.info(f"Exported PDF: {destination_path} ({len(processed)} page(s))")
+        logger.info("Exported PDF: %s (%s page(s))", destination, len(valid_paths))
 
-    def _prepare_for_pdf(self, paths: list) -> list:
-        """
-        img2pdf works best with JPEG/PNG.
-        Convert any unsupported formats to JPEG in temp dir.
-        """
-        import cv2
-        from utils.config import TEMP_DIR
-        from datetime import datetime
-
-        result = []
-        for p in paths:
-            ext = Path(p).suffix.lower()
-            if ext in (".jpg", ".jpeg", ".png"):
-                result.append(p)
-            else:
-                # Convert to JPEG
-                img = cv2.imread(str(p))
-                if img is None:
-                    continue
-                out = str(TEMP_DIR / f"pdf_prep_{datetime.now().strftime('%H%M%S%f')}.jpg")
-                cv2.imwrite(out, img, [cv2.IMWRITE_JPEG_QUALITY, 95])
-                result.append(out)
-        return result
+    def _format_from_suffix(self, suffix: str) -> str:
+        formats = {
+            ".jpg": "JPEG",
+            ".jpeg": "JPEG",
+            ".png": "PNG",
+            ".tif": "TIFF",
+            ".tiff": "TIFF",
+            ".bmp": "BMP",
+        }
+        try:
+            return formats[suffix]
+        except KeyError:
+            raise ValueError(f"Unsupported export format: {suffix}")

@@ -123,14 +123,14 @@ class MergeService:
         kp2, des2 = orb.detectAndCompute(img2, None)
 
         if des1 is None or des2 is None or len(kp1) < 4 or len(kp2) < 4:
-            logger.warning("Not enough features — using simple hstack fallback")
+            logger.warning("Not enough features - using simple hstack fallback")
             return self._simple_hstack(img1, img2)
 
         bf = cv2.BFMatcher(cv2.NORM_HAMMING, crossCheck=True)
         matches = sorted(bf.match(des1, des2), key=lambda m: m.distance)
 
         if len(matches) < 4:
-            logger.warning("Not enough matches — using simple hstack fallback")
+            logger.warning("Not enough matches - using simple hstack fallback")
             return self._simple_hstack(img1, img2)
 
         good = matches[:min(100, len(matches))]
@@ -145,15 +145,40 @@ class MergeService:
         h1, w1 = img1.shape[:2]
         h2, w2 = img2.shape[:2]
 
-        # Warp img2 into img1 coordinate space
-        panorama_width = w1 + w2
-        panorama_height = max(h1, h2)
-        warped = cv2.warpPerspective(img2, H, (panorama_width, panorama_height))
+        corners_img1 = np.float32([[0, 0], [w1, 0], [w1, h1], [0, h1]]).reshape(-1, 1, 2)
+        corners_img2 = np.float32([[0, 0], [w2, 0], [w2, h2], [0, h2]]).reshape(-1, 1, 2)
+        warped_corners_img2 = cv2.perspectiveTransform(corners_img2, H)
+        all_corners = np.concatenate((corners_img1, warped_corners_img2), axis=0)
 
-        # Paste img1 on top
+        x_min, y_min = np.int32(all_corners.min(axis=0).ravel() - 0.5)
+        x_max, y_max = np.int32(all_corners.max(axis=0).ravel() + 0.5)
+
+        translate_x = -x_min if x_min < 0 else 0
+        translate_y = -y_min if y_min < 0 else 0
+        translation = np.array(
+            [[1, 0, translate_x], [0, 1, translate_y], [0, 0, 1]],
+            dtype=np.float64,
+        )
+
+        output_width = int(x_max - x_min)
+        output_height = int(y_max - y_min)
+        if output_width <= 0 or output_height <= 0:
+            return self._simple_hstack(img1, img2)
+
+        warped = cv2.warpPerspective(img2, translation @ H, (output_width, output_height))
         result = warped.copy()
-        result[0:h1, 0:w1] = img1
 
+        x1 = translate_x
+        y1 = translate_y
+        roi = result[y1:y1 + h1, x1:x1 + w1]
+        existing_mask = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY) > 0
+        overlap = existing_mask
+
+        roi[~existing_mask] = img1[~existing_mask]
+        if np.any(overlap):
+            roi[overlap] = cv2.addWeighted(roi[overlap], 0.5, img1[overlap], 0.5, 0)
+
+        result[y1:y1 + h1, x1:x1 + w1] = roi
         return result
 
     def _simple_hstack(self, img1, img2):
@@ -207,10 +232,10 @@ class MergeService:
                 peri = cv2.arcLength(c, True)
                 approx = cv2.approxPolyDP(c, 0.02 * peri, True)
                 if len(approx) == 4:
-                    logger.info("Document boundary found — applying perspective fix")
+                    logger.info("Document boundary found - applying perspective fix")
                     return self._four_point_transform(orig, approx.reshape(4, 2))
 
-        logger.warning("No document boundary found — returning original")
+        logger.warning("No document boundary found - returning original")
         return orig
 
     def auto_crop_straighten_paths(self, image_paths):

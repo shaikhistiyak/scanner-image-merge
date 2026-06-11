@@ -1,17 +1,18 @@
-from PyQt6.QtCore import QTimer, Qt, QSize
-from PyQt6.QtWidgets import (
+from PyQt5.QtCore import QTimer, Qt, QSize
+from PyQt5.QtWidgets import (
     QMainWindow, QWidget, QHBoxLayout, QVBoxLayout,
     QLabel, QPushButton, QComboBox, QListWidget,
     QListWidgetItem, QFrame, QFileDialog,
     QAbstractItemView, QMessageBox, QProgressBar,
     QSizePolicy, QSplitter,
 )
-from PyQt6.QtGui import QAction, QImage, QPixmap, QIcon, QFont
+from PyQt5.QtWidgets import QAction
+from PyQt5.QtGui import QImage, QPixmap, QIcon
 
 from pathlib import Path
 
 from presentation.widgets.image_viewer import ImageViewer
-from presentation.workers.scan_worker import ScanWorker, MergeWorker
+from presentation.workers.scan_worker import ScanWorker, MergeWorker, BatchImageWorker
 
 from services.device_service import DeviceService
 from services.camera_service import CameraService
@@ -28,8 +29,6 @@ from utils.config import (
 )
 from utils.image_utils import numpy_to_pixmap, pixmap_thumbnail
 from utils.logger import get_logger
-
-import cv2
 
 logger = get_logger(__name__)
 
@@ -49,6 +48,7 @@ class MainWindow(QMainWindow):
         self.current_image_path = None
         self._scan_worker = None
         self._merge_worker = None
+        self._batch_worker = None
 
         self.setWindowTitle(f"{APP_NAME} v{APP_VERSION}")
         self.resize(1500, 900)
@@ -149,7 +149,7 @@ class MainWindow(QMainWindow):
         layout.addWidget(self._section_label("Device"))
         self.device_combo = QComboBox()
         layout.addWidget(self.device_combo)
-        self.refresh_btn = QPushButton("⟳  Refresh Devices")
+        self.refresh_btn = QPushButton("Refresh Devices")
         layout.addWidget(self.refresh_btn)
 
         layout.addSpacing(10)
@@ -171,15 +171,15 @@ class MainWindow(QMainWindow):
 
         # Scan / Camera buttons
         layout.addWidget(self._section_label("Capture"))
-        self.scan_btn = QPushButton("🖨  Scan Document")
+        self.scan_btn = QPushButton("Scan Document")
         self.scan_btn.setObjectName("primary")
         layout.addWidget(self.scan_btn)
 
-        self.capture_btn = QPushButton("📷  Capture Photo")
+        self.capture_btn = QPushButton("Capture Photo")
         layout.addWidget(self.capture_btn)
 
-        self.start_camera_btn = QPushButton("▶  Start Camera")
-        self.stop_camera_btn = QPushButton("■  Stop Camera")
+        self.start_camera_btn = QPushButton("Start Camera")
+        self.stop_camera_btn = QPushButton("Stop Camera")
         layout.addWidget(self.start_camera_btn)
         layout.addWidget(self.stop_camera_btn)
 
@@ -209,9 +209,7 @@ class MainWindow(QMainWindow):
         layout.addWidget(self._section_label("Workspace Images"))
 
         self.workspace_list = QListWidget()
-        self.workspace_list.setSelectionMode(
-            QAbstractItemView.SelectionMode.ExtendedSelection
-        )
+        self.workspace_list.setSelectionMode(QAbstractItemView.ExtendedSelection)
         self.workspace_list.setIconSize(QSize(*THUMBNAIL_SIZE))
         self.workspace_list.setSpacing(2)
         layout.addWidget(self.workspace_list)
@@ -229,7 +227,7 @@ class MainWindow(QMainWindow):
         # ---- Merge Options ----
         layout.addWidget(self._section_label("Merge"))
 
-        self.stitch_btn = QPushButton("✨  Smart Stitch")
+        self.stitch_btn = QPushButton("Smart Stitch")
         self.stitch_btn.setObjectName("success")
         self.stitch_btn.setToolTip(
             "Seamlessly stitch selected scans into one image.\n"
@@ -237,9 +235,9 @@ class MainWindow(QMainWindow):
         )
         layout.addWidget(self.stitch_btn)
 
-        self.vertical_btn = QPushButton("⬇  Vertical Stack")
-        self.horizontal_btn = QPushButton("➡  Horizontal Stack")
-        self.grid_btn = QPushButton("⊞  Grid Merge")
+        self.vertical_btn = QPushButton("Vertical Stack")
+        self.horizontal_btn = QPushButton("Horizontal Stack")
+        self.grid_btn = QPushButton("Grid Merge")
         layout.addWidget(self.vertical_btn)
         layout.addWidget(self.horizontal_btn)
         layout.addWidget(self.grid_btn)
@@ -249,7 +247,7 @@ class MainWindow(QMainWindow):
         # ---- Post-processing ----
         layout.addWidget(self._section_label("Post-Process"))
 
-        self.crop_btn = QPushButton("✂  Auto Crop & Straighten")
+        self.crop_btn = QPushButton("Auto Crop && Straighten")
         self.crop_btn.setObjectName("warning")
         self.crop_btn.setToolTip(
             "Detect document edges and remove background.\n"
@@ -261,8 +259,8 @@ class MainWindow(QMainWindow):
 
         # ---- Export ----
         layout.addWidget(self._section_label("Export"))
-        self.export_image_btn = QPushButton("💾  Export as Image")
-        self.export_pdf_btn = QPushButton("📄  Export as PDF")
+        self.export_image_btn = QPushButton("Export as Image")
+        self.export_pdf_btn = QPushButton("Export as PDF")
         layout.addWidget(self.export_image_btn)
         layout.addWidget(self.export_pdf_btn)
 
@@ -279,12 +277,12 @@ class MainWindow(QMainWindow):
         toolbar.setIconSize(QSize(18, 18))
 
         actions = [
-            ("📂  Import", self._import_image),
-            ("🔍+  Zoom In", self.image_viewer.zoom_in),
-            ("🔍-  Zoom Out", self.image_viewer.zoom_out),
-            ("↺  Rotate L", self.image_viewer.rotate_left),
-            ("↻  Rotate R", self.image_viewer.rotate_right),
-            ("⊡  Fit Screen", self.image_viewer.fit_image),
+            ("Import", self._import_image),
+            ("Zoom In", self.image_viewer.zoom_in),
+            ("Zoom Out", self.image_viewer.zoom_out),
+            ("Rotate L", self.image_viewer.rotate_left),
+            ("Rotate R", self.image_viewer.rotate_right),
+            ("Fit Screen", self.image_viewer.fit_image),
         ]
 
         for label, slot in actions:
@@ -379,9 +377,12 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage("Select a camera device first")
             return
         index = int(selected.split()[-1])
-        self.camera_service.start_camera(index)
-        self.camera_timer.start(30)
-        self.statusBar().showMessage(f"Camera {index} live")
+        try:
+            self.camera_service.start_camera(index)
+            self.camera_timer.start(30)
+            self.statusBar().showMessage(f"Camera {index} live")
+        except Exception as exc:
+            self._show_error(f"Camera start failed: {exc}")
 
     def _stop_camera(self):
         self.camera_timer.stop()
@@ -395,7 +396,7 @@ class MainWindow(QMainWindow):
         import cv2
         rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         h, w, ch = rgb.shape
-        qt_img = QImage(rgb.data, w, h, ch * w, QImage.Format.Format_RGB888)
+        qt_img = QImage(rgb.data, w, h, ch * w, QImage.Format_RGB888)
         pixmap = QPixmap.fromImage(qt_img)
         self.image_viewer.pixmap_item.setPixmap(pixmap)
         self.image_viewer.scene.setSceneRect(
@@ -407,9 +408,12 @@ class MainWindow(QMainWindow):
         if frame is None:
             self.statusBar().showMessage("No camera frame available")
             return
-        file_path = self.image_service.save_frame(frame)
-        self._add_to_workspace(file_path)
-        self.statusBar().showMessage(f"Captured: {Path(file_path).name}")
+        try:
+            file_path = self.image_service.save_frame(frame)
+            self._add_to_workspace(file_path)
+            self.statusBar().showMessage(f"Captured: {Path(file_path).name}")
+        except Exception as exc:
+            self._show_error(f"Capture failed: {exc}")
 
     # ------------------------------------------------------------------
     # Import
@@ -440,13 +444,13 @@ class MainWindow(QMainWindow):
 
         # Check duplicate in list
         for i in range(self.workspace_list.count()):
-            if self.workspace_list.item(i).data(Qt.ItemDataRole.UserRole) == image.file_path:
+            if self.workspace_list.item(i).data(Qt.UserRole) == image.file_path:
                 return False
 
         # Thumbnail
         thumb = pixmap_thumbnail(image.file_path, THUMBNAIL_SIZE)
         item = QListWidgetItem(image.file_name)
-        item.setData(Qt.ItemDataRole.UserRole, image.file_path)
+        item.setData(Qt.UserRole, image.file_path)
         if not thumb.isNull():
             item.setIcon(QIcon(thumb))
         self.workspace_list.addItem(item)
@@ -457,20 +461,20 @@ class MainWindow(QMainWindow):
         return True
 
     def _load_workspace_image(self, item: QListWidgetItem):
-        file_path = item.data(Qt.ItemDataRole.UserRole)
+        file_path = item.data(Qt.UserRole)
         if file_path and self.image_viewer.load_image(file_path):
             self.current_image_path = file_path
 
     def _get_selected_paths(self) -> list:
         return [
-            item.data(Qt.ItemDataRole.UserRole)
+            item.data(Qt.UserRole)
             for item in self.workspace_list.selectedItems()
-            if item.data(Qt.ItemDataRole.UserRole)
+            if item.data(Qt.UserRole)
         ]
 
     def _remove_selected(self):
         for item in self.workspace_list.selectedItems():
-            fp = item.data(Qt.ItemDataRole.UserRole)
+            fp = item.data(Qt.UserRole)
             self.workspace_service.remove_image(fp)
             self.workspace_list.takeItem(self.workspace_list.row(item))
 
@@ -534,33 +538,36 @@ class MainWindow(QMainWindow):
             return
 
         self._set_busy(True, "Auto crop & straighten...")
+        self._batch_worker = BatchImageWorker(
+            self.merge_service.auto_crop_straighten_paths,
+            paths,
+        )
+        self._batch_worker.finished.connect(self._on_auto_crop_finished)
+        self._batch_worker.error.connect(self._on_auto_crop_error)
+        self._batch_worker.start()
 
-        def do_crop(image_paths):
-            import cv2
-            results = self.merge_service.auto_crop_straighten_paths(image_paths)
-            # Return first result for display; save all
-            return results[0] if results else None
-
-        # Save all cropped images
+    def _on_auto_crop_finished(self, images):
+        self._set_busy(False)
+        saved = []
         try:
-            images = self.merge_service.auto_crop_straighten_paths(paths)
-            saved = []
-            for img in images:
-                if img is not None:
-                    fp = self.image_service.save_image(img)
-                    saved.append(fp)
-            self._set_busy(False)
-            if saved:
-                for fp in saved:
-                    self._add_to_workspace(fp)
-                self.statusBar().showMessage(
-                    f"Auto crop applied to {len(saved)} image(s)"
-                )
-            else:
-                self._show_error("Auto crop did not produce any results.")
-        except Exception as e:
-            self._set_busy(False)
-            self._show_error(f"Auto crop failed: {e}")
+            for image in images:
+                if image is not None:
+                    saved.append(self.image_service.save_image(image))
+        except Exception as exc:
+            self._show_error(f"Auto crop save failed: {exc}")
+            return
+
+        if not saved:
+            self._show_error("Auto crop did not produce any results.")
+            return
+
+        for file_path in saved:
+            self._add_to_workspace(file_path)
+        self.statusBar().showMessage(f"Auto crop applied to {len(saved)} image(s)")
+
+    def _on_auto_crop_error(self, message: str):
+        self._set_busy(False)
+        self._show_error(f"Auto crop failed: {message}")
 
     # ------------------------------------------------------------------
     # Export

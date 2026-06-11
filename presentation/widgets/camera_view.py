@@ -1,12 +1,12 @@
-from PyQt6.QtWidgets import QLabel
-from PyQt6.QtCore import Qt
+from PyQt5.QtWidgets import QLabel
+from PyQt5.QtCore import Qt
 
 
 class CameraView(QLabel):
     def __init__(self):
         super().__init__()
 
-        self.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.setAlignment(Qt.AlignCenter)
         self.setText("Camera Preview")
 
         self.setStyleSheet("""

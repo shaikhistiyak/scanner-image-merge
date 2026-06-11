@@ -1,6 +1,6 @@
-from PyQt6.QtCore import Qt
-from PyQt6.QtGui import QPixmap, QPainter
-from PyQt6.QtWidgets import QGraphicsView, QGraphicsScene, QGraphicsPixmapItem
+from PyQt5.QtCore import Qt
+from PyQt5.QtGui import QPixmap, QPainter
+from PyQt5.QtWidgets import QGraphicsView, QGraphicsScene, QGraphicsPixmapItem
 
 
 class ImageViewer(QGraphicsView):
@@ -13,13 +13,13 @@ class ImageViewer(QGraphicsView):
         self.scene.addItem(self.pixmap_item)
         self.zoom_factor = 1.0
 
-        self.setDragMode(QGraphicsView.DragMode.ScrollHandDrag)
+        self.setDragMode(QGraphicsView.ScrollHandDrag)
         self.setRenderHints(
-            QPainter.RenderHint.Antialiasing
-            | QPainter.RenderHint.SmoothPixmapTransform
+            QPainter.Antialiasing
+            | QPainter.SmoothPixmapTransform
         )
-        self.setTransformationAnchor(QGraphicsView.ViewportAnchor.AnchorUnderMouse)
-        self.setResizeAnchor(QGraphicsView.ViewportAnchor.AnchorUnderMouse)
+        self.setTransformationAnchor(QGraphicsView.AnchorUnderMouse)
+        self.setResizeAnchor(QGraphicsView.AnchorUnderMouse)
 
         self.setStyleSheet("background: #2b2b2b; border: none;")
 
@@ -29,7 +29,7 @@ class ImageViewer(QGraphicsView):
             return False
         self.pixmap_item.setPixmap(pixmap)
         self.scene.setSceneRect(self.pixmap_item.boundingRect())
-        self.fitInView(self.scene.sceneRect(), Qt.AspectRatioMode.KeepAspectRatio)
+        self.fitInView(self.scene.sceneRect(), Qt.KeepAspectRatio)
         self.centerOn(self.pixmap_item)
         self.zoom_factor = 1.0
         return True
@@ -39,7 +39,7 @@ class ImageViewer(QGraphicsView):
             return False
         self.pixmap_item.setPixmap(pixmap)
         self.scene.setSceneRect(self.pixmap_item.boundingRect())
-        self.fitInView(self.scene.sceneRect(), Qt.AspectRatioMode.KeepAspectRatio)
+        self.fitInView(self.scene.sceneRect(), Qt.KeepAspectRatio)
         self.centerOn(self.pixmap_item)
         self.zoom_factor = 1.0
         return True
@@ -62,7 +62,7 @@ class ImageViewer(QGraphicsView):
 
     def fit_image(self):
         self.resetTransform()
-        self.fitInView(self.scene.sceneRect(), Qt.AspectRatioMode.KeepAspectRatio)
+        self.fitInView(self.scene.sceneRect(), Qt.KeepAspectRatio)
         self.zoom_factor = 1.0
 
     def wheelEvent(self, event):
