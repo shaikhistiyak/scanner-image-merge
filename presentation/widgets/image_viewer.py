@@ -1,63 +1,45 @@
 from PyQt6.QtCore import Qt
-from PyQt6.QtGui import (
-    QPixmap,
-    QPainter,
-)
-from PyQt6.QtWidgets import (
-    QGraphicsView,
-    QGraphicsScene,
-    QGraphicsPixmapItem,
-)
+from PyQt6.QtGui import QPixmap, QPainter
+from PyQt6.QtWidgets import QGraphicsView, QGraphicsScene, QGraphicsPixmapItem
 
 
 class ImageViewer(QGraphicsView):
+
     def __init__(self):
         super().__init__()
-
         self.scene = QGraphicsScene()
         self.setScene(self.scene)
-
         self.pixmap_item = QGraphicsPixmapItem()
         self.scene.addItem(self.pixmap_item)
-
         self.zoom_factor = 1.0
 
-        # Drag image with mouse
-        self.setDragMode(
-            QGraphicsView.DragMode.ScrollHandDrag
-        )
-
-        # Better image quality
+        self.setDragMode(QGraphicsView.DragMode.ScrollHandDrag)
         self.setRenderHints(
             QPainter.RenderHint.Antialiasing
             | QPainter.RenderHint.SmoothPixmapTransform
         )
+        self.setTransformationAnchor(QGraphicsView.ViewportAnchor.AnchorUnderMouse)
+        self.setResizeAnchor(QGraphicsView.ViewportAnchor.AnchorUnderMouse)
 
-        # Zoom towards mouse position
-        self.setTransformationAnchor(
-            QGraphicsView.ViewportAnchor.AnchorUnderMouse
-        )
+        self.setStyleSheet("background: #2b2b2b; border: none;")
 
-        self.setResizeAnchor(
-            QGraphicsView.ViewportAnchor.AnchorUnderMouse
-        )
-
-    def load_image(self, image_path):
+    def load_image(self, image_path: str) -> bool:
         pixmap = QPixmap(image_path)
-
         if pixmap.isNull():
             return False
-
         self.pixmap_item.setPixmap(pixmap)
-        self.scene.setSceneRect(
-            self.pixmap_item.boundingRect()
-        )
+        self.scene.setSceneRect(self.pixmap_item.boundingRect())
+        self.fitInView(self.scene.sceneRect(), Qt.AspectRatioMode.KeepAspectRatio)
+        self.centerOn(self.pixmap_item)
+        self.zoom_factor = 1.0
+        return True
 
-        self.fitInView(
-            self.scene.sceneRect(),
-            Qt.AspectRatioMode.KeepAspectRatio
-        )
-
+    def load_pixmap(self, pixmap: QPixmap) -> bool:
+        if pixmap.isNull():
+            return False
+        self.pixmap_item.setPixmap(pixmap)
+        self.scene.setSceneRect(self.pixmap_item.boundingRect())
+        self.fitInView(self.scene.sceneRect(), Qt.AspectRatioMode.KeepAspectRatio)
         self.centerOn(self.pixmap_item)
         self.zoom_factor = 1.0
         return True
@@ -69,7 +51,7 @@ class ImageViewer(QGraphicsView):
 
     def zoom_out(self):
         if self.zoom_factor > 0.1:
-            self.scale(0.8, 0.8)    
+            self.scale(0.8, 0.8)
             self.zoom_factor *= 0.8
 
     def rotate_left(self):
@@ -80,12 +62,7 @@ class ImageViewer(QGraphicsView):
 
     def fit_image(self):
         self.resetTransform()
-
-        self.fitInView(
-            self.scene.sceneRect(),
-            Qt.AspectRatioMode.KeepAspectRatio
-        )
-
+        self.fitInView(self.scene.sceneRect(), Qt.AspectRatioMode.KeepAspectRatio)
         self.zoom_factor = 1.0
 
     def wheelEvent(self, event):

@@ -1,0 +1,31 @@
+[2026-06-11 10:48:32] INFO presentation.workers.scan_worker — ScanWorker: CanoScan LiDE 120 | 300 DPI | Color
+[2026-06-11 10:48:33] INFO services.scanner_service — DPI set to 300
+[2026-06-11 10:48:33] INFO services.scanner_service — Color mode set to Color (WIA intent 1)
+[2026-06-11 10:48:53] INFO services.scanner_service — Scan saved: F:\scanner_pro\temp\scan_20260611_104853.jpg
+[2026-06-11 10:48:53] INFO services.workspace_service — Added to workspace: scan_20260611_104853.jpg
+[2026-06-11 10:49:23] INFO presentation.workers.scan_worker — ScanWorker: CanoScan LiDE 120 | 300 DPI | Color
+[2026-06-11 10:49:23] INFO services.scanner_service — DPI set to 300
+[2026-06-11 10:49:23] INFO services.scanner_service — Color mode set to Color (WIA intent 1)
+[2026-06-11 10:49:38] INFO services.scanner_service — Scan saved: F:\scanner_pro\temp\scan_20260611_104938.jpg
+[2026-06-11 10:49:38] INFO services.workspace_service — Added to workspace: scan_20260611_104938.jpg
+[2026-06-11 10:49:54] INFO services.merge_service — Smart stitch: 2 images
+[2026-06-11 10:49:55] INFO services.merge_service — Falling back to feature-based blend
+[2026-06-11 10:49:57] INFO services.image_service — Image saved: F:\scanner_pro\temp\merged_20260611_104956.jpg
+[2026-06-11 10:49:57] INFO services.workspace_service — Added to workspace: merged_20260611_104956.jpg
+[2026-06-11 10:50:03] WARNING services.merge_service — No document boundary found — returning original
+[2026-06-11 10:50:04] INFO services.merge_service — Document boundary found — applying perspective fix
+[2026-06-11 10:50:04] INFO services.image_service — Image saved: F:\scanner_pro\temp\merged_20260611_105004.jpg
+[2026-06-11 10:50:04] INFO services.image_service — Image saved: F:\scanner_pro\temp\merged_20260611_105004.jpg
+[2026-06-11 10:50:04] INFO services.workspace_service — Added to workspace: merged_20260611_105004.jpg
+[2026-06-11 10:50:25] WARNING services.merge_service — No document boundary found — returning original
+[2026-06-11 10:50:25] INFO services.merge_service — Document boundary found — applying perspective fix
+[2026-06-11 10:50:25] INFO services.image_service — Image saved: F:\scanner_pro\temp\merged_20260611_105025.jpg
+[2026-06-11 10:50:25] INFO services.image_service — Image saved: F:\scanner_pro\temp\merged_20260611_105025.jpg
+[2026-06-11 10:50:25] INFO services.workspace_service — Added to workspace: merged_20260611_105025.jpg
+[2026-06-11 10:52:43] INFO services.merge_service — Smart stitch: 2 images
+[2026-06-11 10:52:44] INFO services.merge_service — Falling back to feature-based blend
+[2026-06-11 10:52:45] INFO services.image_service — Image saved: F:\scanner_pro\temp\merged_20260611_105245.jpg
+[2026-06-11 10:52:45] INFO services.workspace_service — Added to workspace: merged_20260611_105245.jpg
+[2026-06-11 10:53:22] INFO services.export_service — Exported image: C:/Users/istiyak personal/Downloads/merged_20260611_105245.jpg
+[2026-06-11 10:53:31] INFO services.export_service — Exported image: C:/Users/istiyak personal/Downloads/scan_20260611_104853.jpg
+[2026-06-11 10:53:39] INFO services.export_service — Exported image: C:/Users/istiyak personal/Downloads/scan_20260611_104938.jpg

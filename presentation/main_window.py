@@ -1,28 +1,17 @@
-from PyQt6.QtCore import QTimer, Qt
+from PyQt6.QtCore import QTimer, Qt, QSize
 from PyQt6.QtWidgets import (
-    QMainWindow,
-    QWidget,
-    QHBoxLayout,
-    QVBoxLayout,
-    QLabel,
-    QPushButton,
-    QComboBox,
-    QListWidget,
-    QListWidgetItem,
-    QFrame,
-    QFileDialog,
-    QAbstractItemView,
-    QMessageBox,
+    QMainWindow, QWidget, QHBoxLayout, QVBoxLayout,
+    QLabel, QPushButton, QComboBox, QListWidget,
+    QListWidgetItem, QFrame, QFileDialog,
+    QAbstractItemView, QMessageBox, QProgressBar,
+    QSizePolicy, QSplitter,
 )
-from PyQt6.QtGui import (
-    QAction,
-    QImage,
-    QPixmap,
-)
+from PyQt6.QtGui import QAction, QImage, QPixmap, QIcon, QFont
 
 from pathlib import Path
 
 from presentation.widgets.image_viewer import ImageViewer
+from presentation.workers.scan_worker import ScanWorker, MergeWorker
 
 from services.device_service import DeviceService
 from services.camera_service import CameraService
@@ -31,10 +20,22 @@ from services.workspace_service import WorkspaceService
 from services.merge_service import MergeService
 from services.export_service import ExportService
 
+from utils.config import (
+    APP_NAME, APP_VERSION,
+    RESOLUTIONS, DEFAULT_RESOLUTION,
+    COLOR_MODES, DEFAULT_COLOR_MODE,
+    SUPPORTED_IMAGE_FORMATS, THUMBNAIL_SIZE,
+)
+from utils.image_utils import numpy_to_pixmap, pixmap_thumbnail
+from utils.logger import get_logger
+
 import cv2
+
+logger = get_logger(__name__)
 
 
 class MainWindow(QMainWindow):
+
     def __init__(self):
         super().__init__()
 
@@ -44,583 +45,589 @@ class MainWindow(QMainWindow):
         self.workspace_service = WorkspaceService()
         self.merge_service = MergeService()
         self.export_service = ExportService()
-        self.current_image_path = None
-        
-        self.setWindowTitle("Scanner Image Merge Pro")
-        self.resize(1400, 900)
 
-        self.setup_ui()
+        self.current_image_path = None
+        self._scan_worker = None
+        self._merge_worker = None
+
+        self.setWindowTitle(f"{APP_NAME} v{APP_VERSION}")
+        self.resize(1500, 900)
+        self._apply_style()
+        self._setup_ui()
+        self._setup_toolbar()
+        self._connect_signals()
 
         self.refresh_devices()
 
-        self.timer = QTimer()
-        self.timer.timeout.connect(self.update_camera_frame)
-        
-        
+        self.camera_timer = QTimer()
+        self.camera_timer.timeout.connect(self._update_camera_frame)
+
         self.statusBar().showMessage("Ready")
 
-    def setup_ui(self):
-        central_widget = QWidget()
-        self.setCentralWidget(central_widget)
+    # ------------------------------------------------------------------
+    # Style
+    # ------------------------------------------------------------------
 
-        main_layout = QHBoxLayout(central_widget)
+    def _apply_style(self):
+        self.setStyleSheet("""
+            QMainWindow { background: #1e1e1e; }
+            QWidget { background: #1e1e1e; color: #e0e0e0; font-size: 13px; }
+            QFrame { background: #252525; border-radius: 6px; }
+            QPushButton {
+                background: #3a3a3a; color: #e0e0e0;
+                border: 1px solid #555; border-radius: 5px;
+                padding: 6px 10px; font-size: 13px;
+            }
+            QPushButton:hover { background: #4a4a4a; border-color: #888; }
+            QPushButton:pressed { background: #2a2a2a; }
+            QPushButton#primary {
+                background: #2563eb; color: white; border-color: #1d4ed8;
+                font-weight: bold;
+            }
+            QPushButton#primary:hover { background: #1d4ed8; }
+            QPushButton#success {
+                background: #16a34a; color: white; border-color: #15803d;
+                font-weight: bold;
+            }
+            QPushButton#success:hover { background: #15803d; }
+            QPushButton#warning {
+                background: #d97706; color: white; border-color: #b45309;
+                font-weight: bold;
+            }
+            QPushButton#warning:hover { background: #b45309; }
+            QComboBox {
+                background: #3a3a3a; border: 1px solid #555;
+                border-radius: 4px; padding: 4px 8px;
+            }
+            QComboBox::drop-down { border: none; }
+            QListWidget {
+                background: #1a1a1a; border: 1px solid #444;
+                border-radius: 4px;
+            }
+            QListWidget::item { padding: 6px; border-bottom: 1px solid #333; }
+            QListWidget::item:selected { background: #2563eb; }
+            QListWidget::item:hover { background: #333; }
+            QLabel#section_header {
+                font-weight: bold; font-size: 11px;
+                color: #888; padding: 4px 0;
+                text-transform: uppercase; letter-spacing: 1px;
+            }
+            QProgressBar {
+                background: #333; border: none; border-radius: 3px; height: 6px;
+            }
+            QProgressBar::chunk { background: #2563eb; border-radius: 3px; }
+            QSplitter::handle { background: #333; width: 2px; }
+        """)
 
-        # =========================
-        # LEFT PANEL
-        # =========================
+    # ------------------------------------------------------------------
+    # UI Setup
+    # ------------------------------------------------------------------
 
-        left_panel = QFrame()
-        left_panel.setFixedWidth(250)
+    def _setup_ui(self):
+        central = QWidget()
+        self.setCentralWidget(central)
+        main_layout = QHBoxLayout(central)
+        main_layout.setSpacing(8)
+        main_layout.setContentsMargins(8, 8, 8, 8)
 
-        left_layout = QVBoxLayout(left_panel)
+        main_layout.addWidget(self._build_left_panel())
+        main_layout.addWidget(self._build_center_panel(), stretch=1)
+        main_layout.addWidget(self._build_right_panel())
 
-        # =========================
-        # DEVICE
-        # =========================
+    def _section_label(self, text: str) -> QLabel:
+        lbl = QLabel(text)
+        lbl.setObjectName("section_header")
+        return lbl
 
-        left_layout.addWidget(QLabel("Device"))
+    def _build_left_panel(self) -> QFrame:
+        panel = QFrame()
+        panel.setFixedWidth(220)
+        layout = QVBoxLayout(panel)
+        layout.setSpacing(6)
 
+        # Device
+        layout.addWidget(self._section_label("Device"))
         self.device_combo = QComboBox()
-        self.device_combo.addItems([
-            "No Device Connected"
-        ])
+        layout.addWidget(self.device_combo)
+        self.refresh_btn = QPushButton("⟳  Refresh Devices")
+        layout.addWidget(self.refresh_btn)
 
-        left_layout.addWidget(self.device_combo)
+        layout.addSpacing(10)
 
-        self.refresh_btn = QPushButton("Refresh Devices")
-        
-        self.refresh_btn.clicked.connect(
-            self.refresh_devices
-        )
-        
-        left_layout.addWidget(self.refresh_btn)
-
-        # =========================
-        # SCAN SETTINGS
-        # =========================
-
-        left_layout.addSpacing(15)
-
-        left_layout.addWidget(QLabel("Resolution"))
-
+        # Scan Settings
+        layout.addWidget(self._section_label("Resolution"))
         self.resolution_combo = QComboBox()
-        self.resolution_combo.addItems([
-            "75 DPI",
-            "150 DPI",
-            "300 DPI",
-            "600 DPI"
-        ])
+        self.resolution_combo.addItems([f"{r} DPI" for r in RESOLUTIONS])
+        self.resolution_combo.setCurrentText(f"{DEFAULT_RESOLUTION} DPI")
+        layout.addWidget(self.resolution_combo)
 
-        left_layout.addWidget(self.resolution_combo)
-
-        left_layout.addWidget(QLabel("Color Mode"))
-
+        layout.addWidget(self._section_label("Color Mode"))
         self.color_combo = QComboBox()
-        self.color_combo.addItems([
-            "Color",
-            "Grayscale",
-            "Black & White"
-        ])
+        self.color_combo.addItems(COLOR_MODES)
+        self.color_combo.setCurrentText(DEFAULT_COLOR_MODE)
+        layout.addWidget(self.color_combo)
 
-        left_layout.addWidget(self.color_combo)
+        layout.addSpacing(10)
 
-        # =========================
-        # ACTIONS
-        # =========================
+        # Scan / Camera buttons
+        layout.addWidget(self._section_label("Capture"))
+        self.scan_btn = QPushButton("🖨  Scan Document")
+        self.scan_btn.setObjectName("primary")
+        layout.addWidget(self.scan_btn)
 
-        left_layout.addSpacing(15)
+        self.capture_btn = QPushButton("📷  Capture Photo")
+        layout.addWidget(self.capture_btn)
 
-        self.scan_btn = QPushButton("Scan")
-        self.scan_btn.clicked.connect(
-            self.scan_document
-        )
-        left_layout.addWidget(self.scan_btn)
+        self.start_camera_btn = QPushButton("▶  Start Camera")
+        self.stop_camera_btn = QPushButton("■  Stop Camera")
+        layout.addWidget(self.start_camera_btn)
+        layout.addWidget(self.stop_camera_btn)
 
-        self.capture_btn = QPushButton("Capture")
-        self.capture_btn.clicked.connect(
-            self.capture_image
-        )
-        left_layout.addWidget(self.capture_btn)
+        # Progress bar (hidden by default)
+        self.progress_bar = QProgressBar()
+        self.progress_bar.setRange(0, 0)   # indeterminate
+        self.progress_bar.setVisible(False)
+        layout.addWidget(self.progress_bar)
 
-        self.start_camera_btn = QPushButton("Start Camera")
-        self.stop_camera_btn = QPushButton("Stop Camera")
+        layout.addStretch()
+        return panel
 
-        self.start_camera_btn.clicked.connect(
-            self.start_camera
-        )
-
-        self.stop_camera_btn.clicked.connect(
-            self.stop_camera
-        )
-        left_layout.addWidget(self.start_camera_btn)
-        left_layout.addWidget(self.stop_camera_btn)
-        
-        
-        left_layout.addStretch()
-
-        # =========================
-        # CENTER PANEL
-        # =========================
-
-        center_panel = QFrame()
-
-        center_layout = QVBoxLayout(center_panel)
-
+    def _build_center_panel(self) -> QFrame:
+        panel = QFrame()
+        layout = QVBoxLayout(panel)
+        layout.setContentsMargins(0, 0, 0, 0)
         self.image_viewer = ImageViewer()
+        layout.addWidget(self.image_viewer)
+        return panel
 
-        center_layout.addWidget(self.image_viewer)
+    def _build_right_panel(self) -> QFrame:
+        panel = QFrame()
+        panel.setFixedWidth(260)
+        layout = QVBoxLayout(panel)
+        layout.setSpacing(6)
 
-        # =========================
-        # RIGHT PANEL
-        # =========================
+        layout.addWidget(self._section_label("Workspace Images"))
 
-        right_panel = QFrame()
-        right_panel.setFixedWidth(300)
-
-        right_layout = QVBoxLayout(right_panel)
-
-        right_layout.addWidget(QLabel("Workspace Images"))
-
-        self.workspace_list= QListWidget()
+        self.workspace_list = QListWidget()
         self.workspace_list.setSelectionMode(
             QAbstractItemView.SelectionMode.ExtendedSelection
         )
-        self.workspace_list.itemClicked.connect(
-            self.load_workspace_image
+        self.workspace_list.setIconSize(QSize(*THUMBNAIL_SIZE))
+        self.workspace_list.setSpacing(2)
+        layout.addWidget(self.workspace_list)
+
+        # Workspace actions
+        ws_row = QHBoxLayout()
+        self.remove_btn = QPushButton("Remove")
+        self.clear_btn = QPushButton("Clear All")
+        ws_row.addWidget(self.remove_btn)
+        ws_row.addWidget(self.clear_btn)
+        layout.addLayout(ws_row)
+
+        layout.addSpacing(8)
+
+        # ---- Merge Options ----
+        layout.addWidget(self._section_label("Merge"))
+
+        self.stitch_btn = QPushButton("✨  Smart Stitch")
+        self.stitch_btn.setObjectName("success")
+        self.stitch_btn.setToolTip(
+            "Seamlessly stitch selected scans into one image.\n"
+            "Works for any document type. Requires overlapping sections."
         )
-        right_layout.addWidget(self.workspace_list)
+        layout.addWidget(self.stitch_btn)
 
-        right_layout.addWidget(QLabel("Merge Options"))
+        self.vertical_btn = QPushButton("⬇  Vertical Stack")
+        self.horizontal_btn = QPushButton("➡  Horizontal Stack")
+        self.grid_btn = QPushButton("⊞  Grid Merge")
+        layout.addWidget(self.vertical_btn)
+        layout.addWidget(self.horizontal_btn)
+        layout.addWidget(self.grid_btn)
 
-        self.vertical_btn = QPushButton("Vertical Merge")
-        self.horizontal_btn = QPushButton("Horizontal Merge")
-        self.grid_btn = QPushButton("Grid Merge")
+        layout.addSpacing(8)
 
-        self.vertical_btn.clicked.connect(
-            self.merge_vertical
+        # ---- Post-processing ----
+        layout.addWidget(self._section_label("Post-Process"))
+
+        self.crop_btn = QPushButton("✂  Auto Crop & Straighten")
+        self.crop_btn.setObjectName("warning")
+        self.crop_btn.setToolTip(
+            "Detect document edges and remove background.\n"
+            "Applies to selected images one by one."
         )
+        layout.addWidget(self.crop_btn)
 
-        self.horizontal_btn.clicked.connect(
-            self.merge_horizontal
-        )
+        layout.addSpacing(8)
 
-        self.grid_btn.clicked.connect(
-            self.merge_grid
-        )
-        
-        right_layout.addWidget(self.vertical_btn)
-        right_layout.addWidget(self.horizontal_btn)
-        right_layout.addWidget(self.grid_btn)
+        # ---- Export ----
+        layout.addWidget(self._section_label("Export"))
+        self.export_image_btn = QPushButton("💾  Export as Image")
+        self.export_pdf_btn = QPushButton("📄  Export as PDF")
+        layout.addWidget(self.export_image_btn)
+        layout.addWidget(self.export_pdf_btn)
 
-        # =========================
-        # MAIN LAYOUT
-        # =========================
+        layout.addStretch()
+        return panel
 
-        main_layout.addWidget(left_panel)
-        main_layout.addWidget(center_panel, 1)
-        main_layout.addWidget(right_panel)
+    # ------------------------------------------------------------------
+    # Toolbar
+    # ------------------------------------------------------------------
 
-        # =========================
-        # TOOLBAR
-        # =========================
-
+    def _setup_toolbar(self):
         toolbar = self.addToolBar("Tools")
+        toolbar.setMovable(False)
+        toolbar.setIconSize(QSize(18, 18))
 
-        self.import_action = QAction("Import", self)
-        self.zoom_in_action = QAction("Zoom In", self)
-        self.zoom_out_action = QAction("Zoom Out", self)
-        self.rotate_left_action = QAction("Rotate Left", self)
-        self.rotate_right_action = QAction("Rotate Right", self)
-        self.fit_action = QAction("Fit Screen", self)
-        self.export_action = QAction(
-            "Export",
-            self
-        )
-        
-        toolbar.addAction(self.import_action)
-        toolbar.addAction(self.zoom_in_action)
-        toolbar.addAction(self.zoom_out_action)
-        toolbar.addAction(self.rotate_left_action)
-        toolbar.addAction(self.rotate_right_action)
-        toolbar.addAction(self.fit_action)
-        toolbar.addAction(
-            self.export_action
-        )
+        actions = [
+            ("📂  Import", self._import_image),
+            ("🔍+  Zoom In", self.image_viewer.zoom_in),
+            ("🔍-  Zoom Out", self.image_viewer.zoom_out),
+            ("↺  Rotate L", self.image_viewer.rotate_left),
+            ("↻  Rotate R", self.image_viewer.rotate_right),
+            ("⊡  Fit Screen", self.image_viewer.fit_image),
+        ]
 
-        # =========================
-        # SIGNALS
-        # =========================
+        for label, slot in actions:
+            act = QAction(label, self)
+            act.triggered.connect(slot)
+            toolbar.addAction(act)
 
-        self.import_action.triggered.connect(self.import_image)
+    # ------------------------------------------------------------------
+    # Signal connections
+    # ------------------------------------------------------------------
 
-        self.zoom_in_action.triggered.connect(
-            self.image_viewer.zoom_in
-        )
+    def _connect_signals(self):
+        self.refresh_btn.clicked.connect(self.refresh_devices)
+        self.scan_btn.clicked.connect(self._scan_document)
+        self.capture_btn.clicked.connect(self._capture_image)
+        self.start_camera_btn.clicked.connect(self._start_camera)
+        self.stop_camera_btn.clicked.connect(self._stop_camera)
 
-        self.zoom_out_action.triggered.connect(
-            self.image_viewer.zoom_out
-        )
+        self.workspace_list.itemClicked.connect(self._load_workspace_image)
+        self.remove_btn.clicked.connect(self._remove_selected)
+        self.clear_btn.clicked.connect(self._clear_workspace)
 
-        self.rotate_left_action.triggered.connect(
-            self.image_viewer.rotate_left
-        )
+        self.stitch_btn.clicked.connect(self._merge_stitch)
+        self.vertical_btn.clicked.connect(self._merge_vertical)
+        self.horizontal_btn.clicked.connect(self._merge_horizontal)
+        self.grid_btn.clicked.connect(self._merge_grid)
 
-        self.rotate_right_action.triggered.connect(
-            self.image_viewer.rotate_right
-        )
+        self.crop_btn.clicked.connect(self._auto_crop_selected)
 
-        self.fit_action.triggered.connect(
-            self.image_viewer.fit_image
-        )
-        self.export_action.triggered.connect(
-            self.export_image
-        )
+        self.export_image_btn.clicked.connect(self._export_image)
+        self.export_pdf_btn.clicked.connect(self._export_pdf)
 
-    def import_image(self):
-        file_paths, _ = QFileDialog.getOpenFileNames(
-            self,
-            "Open Images",
-            "",
-            "Images (*.jpg *.jpeg *.png *.bmp *.tif *.tiff)"
-        )
+    # ------------------------------------------------------------------
+    # Device management
+    # ------------------------------------------------------------------
 
-        if not file_paths:
-            return
-
-        imported = 0
-
-        first_path = None
-
-        for file_path in file_paths:
-            try:
-                image = self.workspace_service.add_image(file_path)
-            except Exception as exc:
-                self.show_error_message(
-                    f"Failed to import {Path(file_path).name}: {exc}"
-                )
-                continue
-
-            if image is None:
-                continue
-
-            already_added = any(
-                self.workspace_list.item(i).data(Qt.ItemDataRole.UserRole) == image.file_path
-                for i in range(self.workspace_list.count())
-            )
-
-            if already_added:
-                continue
-
-            self.add_workspace_item(image.file_path, image.file_name)
-            imported += 1
-
-            if first_path is None:
-                first_path = image.file_path
-
-        if imported == 0:
-            return
-
-        if first_path is None or not self.image_viewer.load_image(first_path):
-            self.show_error_message(
-                f"Imported image could not be displayed: {Path(file_paths[0]).name}"
-            )
-            return
-        
-        self.image_viewer.load_image(first_path)
-        
-        self.statusBar().showMessage(
-            f"{imported} image(s) imported"
-        )
-    
     def refresh_devices(self):
-
         self.device_combo.clear()
-
         devices = self.device_service.get_devices()
-
         if not devices:
-            self.device_combo.addItem(
-                "No Device Found"
-            )
-
-            self.statusBar().showMessage(
-                "No devices detected"
-            )
-
+            self.device_combo.addItem("No Device Found")
+            self.statusBar().showMessage("No devices detected")
             return
-
         self.device_combo.addItems(devices)
+        self.statusBar().showMessage(f"{len(devices)} device(s) detected")
 
-        self.statusBar().showMessage(
-            f"{len(devices)} device(s) detected"
-        )
-        
-    def start_camera(self):
+    # ------------------------------------------------------------------
+    # Scanning
+    # ------------------------------------------------------------------
+
+    def _get_selected_dpi(self) -> int:
+        text = self.resolution_combo.currentText()
+        return int(text.replace(" DPI", ""))
+
+    def _get_selected_color_mode(self) -> str:
+        return self.color_combo.currentText()
+
+    def _scan_document(self):
         selected = self.device_combo.currentText()
-
-        if not selected.startswith("Camera"):
-            self.statusBar().showMessage(
-                "No camera selected"
-            )
+        if not selected or selected in ("No Device Found",) or selected.startswith("Camera"):
+            self._show_error("Please select a scanner from the device list.")
             return
 
-        camera_index = int(selected.split()[-1])
+        self._set_busy(True, "Scanning...")
 
-        self.camera_service.start_camera(camera_index)
-
-        self.timer.start(30)
-
-        self.statusBar().showMessage(
-            f"Camera {camera_index} started"
+        self._scan_worker = ScanWorker(
+            scanner_service=self.device_service.scanner_service,
+            scanner_name=selected,
+            dpi=self._get_selected_dpi(),
+            color_mode=self._get_selected_color_mode(),
         )
-    
-    def stop_camera(self):
+        self._scan_worker.finished.connect(self._on_scan_finished)
+        self._scan_worker.error.connect(self._on_scan_error)
+        self._scan_worker.start()
 
-        self.timer.stop()
+    def _on_scan_finished(self, file_path: str):
+        self._set_busy(False)
+        self._add_to_workspace(file_path)
+        self.statusBar().showMessage(f"Scan complete: {Path(file_path).name}")
 
+    def _on_scan_error(self, message: str):
+        self._set_busy(False)
+        self._show_error(f"Scan failed: {message}")
+
+    # ------------------------------------------------------------------
+    # Camera
+    # ------------------------------------------------------------------
+
+    def _start_camera(self):
+        selected = self.device_combo.currentText()
+        if not selected.startswith("Camera"):
+            self.statusBar().showMessage("Select a camera device first")
+            return
+        index = int(selected.split()[-1])
+        self.camera_service.start_camera(index)
+        self.camera_timer.start(30)
+        self.statusBar().showMessage(f"Camera {index} live")
+
+    def _stop_camera(self):
+        self.camera_timer.stop()
         self.camera_service.stop_camera()
+        self.statusBar().showMessage("Camera stopped")
 
-        self.statusBar().showMessage(
-            "Camera stopped"
-        )
-        
-    def update_camera_frame(self):
-
+    def _update_camera_frame(self):
         frame = self.camera_service.read_frame()
-
         if frame is None:
             return
-
-        frame = cv2.cvtColor(
-            frame,
-            cv2.COLOR_BGR2RGB
-        )
-
-        h, w, ch = frame.shape
-
-        image = QImage(
-            frame.data,
-            w,
-            h,
-            ch * w,
-            QImage.Format.Format_RGB888
-        )
-
-        pixmap = QPixmap.fromImage(image)
-
-        self.image_viewer.pixmap_item.setPixmap(
-            pixmap
-        )
-
+        import cv2
+        rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        h, w, ch = rgb.shape
+        qt_img = QImage(rgb.data, w, h, ch * w, QImage.Format.Format_RGB888)
+        pixmap = QPixmap.fromImage(qt_img)
+        self.image_viewer.pixmap_item.setPixmap(pixmap)
         self.image_viewer.scene.setSceneRect(
             self.image_viewer.pixmap_item.boundingRect()
         )
-    def closeEvent(self, event):
 
-        try:
-            self.stop_camera()
-        except:
-            pass
-
-        event.accept()
-        
-    def capture_image(self):
-
+    def _capture_image(self):
         frame = self.camera_service.read_frame()
-
         if frame is None:
-            self.statusBar().showMessage(
-                "No camera frame available"
-            )
+            self.statusBar().showMessage("No camera frame available")
             return
-
         file_path = self.image_service.save_frame(frame)
+        self._add_to_workspace(file_path)
+        self.statusBar().showMessage(f"Captured: {Path(file_path).name}")
 
+    # ------------------------------------------------------------------
+    # Import
+    # ------------------------------------------------------------------
+
+    def _import_image(self):
+        file_paths, _ = QFileDialog.getOpenFileNames(
+            self, "Open Images", "", SUPPORTED_IMAGE_FORMATS
+        )
+        if not file_paths:
+            return
+        count = 0
+        for fp in file_paths:
+            if self._add_to_workspace(fp):
+                count += 1
+        self.statusBar().showMessage(f"{count} image(s) imported")
+
+    # ------------------------------------------------------------------
+    # Workspace helpers
+    # ------------------------------------------------------------------
+
+    def _add_to_workspace(self, file_path: str) -> bool:
         try:
             image = self.workspace_service.add_image(file_path)
-        except Exception as exc:
-            self.show_error_message(
-                f"Failed to add captured image: {exc}"
-            )
-            return
-
-        if image:
-            self.add_workspace_item(image.file_path, image.file_name)
-
-        if not self.image_viewer.load_image(file_path):
-            self.show_error_message(
-                f"Captured image could not be displayed: {Path(file_path).name}"
-            )
-            return
-
-        self.current_image_path = file_path
-        
-        self.statusBar().showMessage(
-            f"Captured: {Path(file_path).name}"
-        )
-        
-    def scan_document(self):
-
-        selected_device = (
-            self.device_combo.currentText()
-        )
-
-        if (
-            not selected_device
-            or selected_device == "No Device Found"
-            or selected_device.startswith("Camera")
-        ):
-            self.show_error_message(
-                "Please select a scanner"
-            )
-            return
-
-        try:
-
-            file_path = (
-                self.device_service
-                .scanner_service
-                .scan_image(selected_device)
-            )
-
-            image = (
-                self.workspace_service
-                .add_image(file_path)
-            )
-
-            if image:
-                self.add_workspace_item(
-                    image.file_path,
-                    image.file_name
-                )
-
-            if not self.image_viewer.load_image(
-                file_path
-            ):
-                raise ValueError(
-                    "Failed to display scanned image"
-                )
-
-            self.current_image_path = file_path
-
-            self.statusBar().showMessage(
-                "Scan completed"
-            )
-
         except Exception as e:
+            self._show_error(str(e))
+            return False
 
-            self.show_error_message(
-                f"Scan failed: {e}"
-            )
-    def load_workspace_image(self, item):
-        file_path = item.data(Qt.ItemDataRole.UserRole)
+        # Check duplicate in list
+        for i in range(self.workspace_list.count()):
+            if self.workspace_list.item(i).data(Qt.ItemDataRole.UserRole) == image.file_path:
+                return False
 
-        if not file_path:
-            self.show_error_message("Selected image has no path assigned")
-            return
-
-        if not self.image_viewer.load_image(file_path):
-            self.show_error_message(
-                f"Unable to display image: {Path(file_path).name}"
-            )
-            return
-
-        self.current_image_path = file_path
-        
-    def get_selected_image_paths(self):
-
-        selected_items = self.workspace_list.selectedItems()
-
-        paths = []
-
-        for item in selected_items:
-            file_path = item.data(Qt.ItemDataRole.UserRole)
-
-            if file_path:
-                paths.append(file_path)
-
-        return paths
-    
-    def merge_vertical(self):
-        self.process_merge(
-            self.merge_service.merge_vertical,
-            "Vertical merge completed"
-        )
-
-    def merge_horizontal(self):
-        self.process_merge(
-            self.merge_service.merge_horizontal,
-            "Horizontal merge completed"
-        )
-
-    def merge_grid(self):
-        self.process_merge(
-            self.merge_service.merge_grid,
-            "Grid merge completed"
-        )
-
-    def process_merge(self, merge_func, success_message):
-        image_paths = self.get_selected_image_paths()
-
-        if len(image_paths) < 2:
-            self.show_error_message("Select at least 2 images")
-            return
-
-        try:
-            merged = merge_func(image_paths)
-
-            if merged is None or not hasattr(merged, 'size') or merged.size == 0:
-                raise ValueError("Merged image is invalid")
-
-            file_path = self.image_service.save_image(merged)
-
-            if not self.image_viewer.load_image(file_path):
-                raise ValueError("Failed to load merged image")
-            
-            self.current_image_path = file_path
-            
-            self.statusBar().showMessage(success_message)
-        except Exception as exc:
-            self.show_error_message(f"{success_message} failed: {exc}")
-
-    def add_workspace_item(self, file_path, file_name):
-        item = QListWidgetItem(file_name)
-        item.setData(Qt.ItemDataRole.UserRole, file_path)
+        # Thumbnail
+        thumb = pixmap_thumbnail(image.file_path, THUMBNAIL_SIZE)
+        item = QListWidgetItem(image.file_name)
+        item.setData(Qt.ItemDataRole.UserRole, image.file_path)
+        if not thumb.isNull():
+            item.setIcon(QIcon(thumb))
         self.workspace_list.addItem(item)
 
-    def export_image(self):
+        # Show in viewer
+        self.image_viewer.load_image(image.file_path)
+        self.current_image_path = image.file_path
+        return True
 
-        if not self.current_image_path:
-            self.show_error_message(
-                "No image available for export"
-            )
+    def _load_workspace_image(self, item: QListWidgetItem):
+        file_path = item.data(Qt.ItemDataRole.UserRole)
+        if file_path and self.image_viewer.load_image(file_path):
+            self.current_image_path = file_path
+
+    def _get_selected_paths(self) -> list:
+        return [
+            item.data(Qt.ItemDataRole.UserRole)
+            for item in self.workspace_list.selectedItems()
+            if item.data(Qt.ItemDataRole.UserRole)
+        ]
+
+    def _remove_selected(self):
+        for item in self.workspace_list.selectedItems():
+            fp = item.data(Qt.ItemDataRole.UserRole)
+            self.workspace_service.remove_image(fp)
+            self.workspace_list.takeItem(self.workspace_list.row(item))
+
+    def _clear_workspace(self):
+        self.workspace_list.clear()
+        self.workspace_service.clear()
+        self.statusBar().showMessage("Workspace cleared")
+
+    # ------------------------------------------------------------------
+    # Merge operations
+    # ------------------------------------------------------------------
+
+    def _merge_stitch(self):
+        self._run_merge(self.merge_service.merge_stitch, "Smart Stitch")
+
+    def _merge_vertical(self):
+        self._run_merge(self.merge_service.merge_vertical, "Vertical Stack")
+
+    def _merge_horizontal(self):
+        self._run_merge(self.merge_service.merge_horizontal, "Horizontal Stack")
+
+    def _merge_grid(self):
+        self._run_merge(self.merge_service.merge_grid, "Grid Merge")
+
+    def _run_merge(self, merge_func, label: str):
+        paths = self._get_selected_paths()
+        if len(paths) < 2:
+            self._show_error("Select at least 2 images from the workspace.")
             return
 
-        destination_path, _ = QFileDialog.getSaveFileName(
-            self,
-            "Export Image",
-            Path(self.current_image_path).stem,
-            "JPEG (*.jpg);;PNG (*.png)"
+        self._set_busy(True, f"{label} in progress...")
+
+        self._merge_worker = MergeWorker(merge_func, paths)
+        self._merge_worker.finished.connect(
+            lambda img: self._on_merge_finished(img, label)
         )
+        self._merge_worker.error.connect(self._on_merge_error)
+        self._merge_worker.start()
 
-        if not destination_path:
+    def _on_merge_finished(self, image, label: str):
+        self._set_busy(False)
+        try:
+            file_path = self.image_service.save_image(image)
+            self._add_to_workspace(file_path)
+            self.statusBar().showMessage(f"{label} complete: {Path(file_path).name}")
+        except Exception as e:
+            self._show_error(str(e))
+
+    def _on_merge_error(self, message: str):
+        self._set_busy(False)
+        self._show_error(f"Merge failed: {message}")
+
+    # ------------------------------------------------------------------
+    # Auto Crop & Straighten
+    # ------------------------------------------------------------------
+
+    def _auto_crop_selected(self):
+        paths = self._get_selected_paths()
+        if not paths:
+            self._show_error("Select at least one image from the workspace.")
             return
 
+        self._set_busy(True, "Auto crop & straighten...")
+
+        def do_crop(image_paths):
+            import cv2
+            results = self.merge_service.auto_crop_straighten_paths(image_paths)
+            # Return first result for display; save all
+            return results[0] if results else None
+
+        # Save all cropped images
         try:
-            self.export_service.export_image(
-                self.current_image_path,
-                destination_path
-            )
+            images = self.merge_service.auto_crop_straighten_paths(paths)
+            saved = []
+            for img in images:
+                if img is not None:
+                    fp = self.image_service.save_image(img)
+                    saved.append(fp)
+            self._set_busy(False)
+            if saved:
+                for fp in saved:
+                    self._add_to_workspace(fp)
+                self.statusBar().showMessage(
+                    f"Auto crop applied to {len(saved)} image(s)"
+                )
+            else:
+                self._show_error("Auto crop did not produce any results.")
+        except Exception as e:
+            self._set_busy(False)
+            self._show_error(f"Auto crop failed: {e}")
 
+    # ------------------------------------------------------------------
+    # Export
+    # ------------------------------------------------------------------
+
+    def _export_image(self):
+        if not self.current_image_path:
+            self._show_error("No image selected for export.")
+            return
+        dest, _ = QFileDialog.getSaveFileName(
+            self, "Export Image",
+            Path(self.current_image_path).stem,
+            "JPEG (*.jpg);;PNG (*.png);;TIFF (*.tif)"
+        )
+        if not dest:
+            return
+        try:
+            self.export_service.export_image(self.current_image_path, dest)
+            self.statusBar().showMessage(f"Exported: {Path(dest).name}")
+        except Exception as e:
+            self._show_error(f"Export failed: {e}")
+
+    def _export_pdf(self):
+        paths = self._get_selected_paths()
+        if not paths:
+            # Fall back to current image
+            if self.current_image_path:
+                paths = [self.current_image_path]
+            else:
+                self._show_error("Select images to export as PDF.")
+                return
+
+        dest, _ = QFileDialog.getSaveFileName(
+            self, "Export as PDF", "document", "PDF (*.pdf)"
+        )
+        if not dest:
+            return
+        try:
+            self.export_service.export_pdf(paths, dest)
             self.statusBar().showMessage(
-                "Image exported successfully"
+                f"PDF exported: {Path(dest).name} ({len(paths)} page(s))"
             )
+        except Exception as e:
+            self._show_error(f"PDF export failed: {e}")
 
-        except Exception as exc:
-            self.show_error_message(
-                f"Export failed: {exc}"
-            )
-            
-    def show_error_message(self, message):
+    # ------------------------------------------------------------------
+    # Utility
+    # ------------------------------------------------------------------
+
+    def _set_busy(self, busy: bool, message: str = ""):
+        self.scan_btn.setEnabled(not busy)
+        self.stitch_btn.setEnabled(not busy)
+        self.vertical_btn.setEnabled(not busy)
+        self.horizontal_btn.setEnabled(not busy)
+        self.grid_btn.setEnabled(not busy)
+        self.crop_btn.setEnabled(not busy)
+        self.progress_bar.setVisible(busy)
+        if message:
+            self.statusBar().showMessage(message)
+
+    def _show_error(self, message: str):
         self.statusBar().showMessage(message)
         QMessageBox.critical(self, "Error", message)
+
+    def closeEvent(self, event):
+        try:
+            self._stop_camera()
+        except Exception:
+            pass
+        event.accept()
