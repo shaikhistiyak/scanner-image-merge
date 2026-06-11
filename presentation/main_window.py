@@ -247,11 +247,20 @@ class MainWindow(QMainWindow):
         # ---- Post-processing ----
         layout.addWidget(self._section_label("Post-Process"))
 
-        self.crop_btn = QPushButton("Auto Crop && Straighten")
-        self.crop_btn.setObjectName("warning")
+        self.smart_crop_btn = QPushButton("✂  Smart Crop")
+        self.smart_crop_btn.setObjectName("warning")
+        self.smart_crop_btn.setToolTip(
+            "Remove scanner border shadows and black dead zones.\n"
+            "Runs automatically on each selected image.\n"
+            "Use this BEFORE stitching for best results."
+        )
+        layout.addWidget(self.smart_crop_btn)
+
+        self.crop_btn = QPushButton("⬡  Auto Crop && Straighten")
         self.crop_btn.setToolTip(
-            "Detect document edges and remove background.\n"
-            "Applies to selected images one by one."
+            "Smart crop + perspective correction.\n"
+            "Detects document boundary and warps it flat.\n"
+            "Best for photos of documents on a desk."
         )
         layout.addWidget(self.crop_btn)
 
@@ -310,6 +319,7 @@ class MainWindow(QMainWindow):
         self.horizontal_btn.clicked.connect(self._merge_horizontal)
         self.grid_btn.clicked.connect(self._merge_grid)
 
+        self.smart_crop_btn.clicked.connect(self._smart_crop_selected)
         self.crop_btn.clicked.connect(self._auto_crop_selected)
 
         self.export_image_btn.clicked.connect(self._export_image)
@@ -528,8 +538,22 @@ class MainWindow(QMainWindow):
         self._show_error(f"Merge failed: {message}")
 
     # ------------------------------------------------------------------
-    # Auto Crop & Straighten
+    # Smart Crop (border removal) & Auto Crop & Straighten
     # ------------------------------------------------------------------
+
+    def _smart_crop_selected(self):
+        """Remove scanner dark borders from selected images."""
+        paths = self._get_selected_paths()
+        if not paths:
+            self._show_error("Select at least one image from the workspace.")
+            return
+        self._set_busy(True, "Smart crop — removing scanner borders...")
+        self._batch_worker = BatchImageWorker(
+            self.merge_service.smart_crop_paths, paths
+        )
+        self._batch_worker.finished.connect(self._on_auto_crop_finished)
+        self._batch_worker.error.connect(self._on_auto_crop_error)
+        self._batch_worker.start()
 
     def _auto_crop_selected(self):
         paths = self._get_selected_paths()
@@ -623,6 +647,7 @@ class MainWindow(QMainWindow):
         self.vertical_btn.setEnabled(not busy)
         self.horizontal_btn.setEnabled(not busy)
         self.grid_btn.setEnabled(not busy)
+        self.smart_crop_btn.setEnabled(not busy)
         self.crop_btn.setEnabled(not busy)
         self.progress_bar.setVisible(busy)
         if message:
