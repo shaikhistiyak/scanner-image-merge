@@ -13,6 +13,7 @@ from pathlib import Path
 
 from presentation.widgets.image_viewer import ImageViewer
 from presentation.workers.scan_worker import ScanWorker, MergeWorker, BatchImageWorker
+from presentation.dialogs.crop_rotate_dialog import CropRotateDialog
 
 from services.device_service import DeviceService
 from services.camera_service import CameraService
@@ -247,7 +248,16 @@ class MainWindow(QMainWindow):
         # ---- Post-processing ----
         layout.addWidget(self._section_label("Post-Process"))
 
-        self.smart_crop_btn = QPushButton("✂  Smart Crop")
+        self.crop_rotate_btn = QPushButton("✂  Crop & Rotate")
+        self.crop_rotate_btn.setObjectName("primary")
+        self.crop_rotate_btn.setToolTip(
+            "Open interactive crop & rotate editor.\n"
+            "Drag handles to set crop area.\n"
+            "Use slider to straighten skewed scans."
+        )
+        layout.addWidget(self.crop_rotate_btn)
+
+        self.smart_crop_btn = QPushButton("⚡  Smart Crop")
         self.smart_crop_btn.setObjectName("warning")
         self.smart_crop_btn.setToolTip(
             "Remove scanner border shadows and black dead zones.\n"
@@ -319,6 +329,7 @@ class MainWindow(QMainWindow):
         self.horizontal_btn.clicked.connect(self._merge_horizontal)
         self.grid_btn.clicked.connect(self._merge_grid)
 
+        self.crop_rotate_btn.clicked.connect(self._open_crop_rotate)
         self.smart_crop_btn.clicked.connect(self._smart_crop_selected)
         self.crop_btn.clicked.connect(self._auto_crop_selected)
 
@@ -538,6 +549,33 @@ class MainWindow(QMainWindow):
         self._show_error(f"Merge failed: {message}")
 
     # ------------------------------------------------------------------
+    # Crop & Rotate (interactive dialog)
+    # ------------------------------------------------------------------
+
+    def _open_crop_rotate(self):
+        """Open the interactive crop & rotate dialog for the selected image."""
+        # Use selected image, or fall back to currently viewed image
+        paths = self._get_selected_paths()
+        if paths:
+            image_path = paths[0]
+        elif self.current_image_path:
+            image_path = self.current_image_path
+        else:
+            self._show_error("Select an image in the workspace first.")
+            return
+
+        try:
+            dlg = CropRotateDialog(image_path, parent=self)
+            if dlg.exec_() == CropRotateDialog.Accepted and dlg.result_image is not None:
+                file_path = self.image_service.save_image(dlg.result_image)
+                self._add_to_workspace(file_path)
+                self.statusBar().showMessage(
+                    f"Crop & rotate applied → {Path(file_path).name}"
+                )
+        except Exception as e:
+            self._show_error(f"Crop & Rotate failed: {e}")
+
+    # ------------------------------------------------------------------
     # Smart Crop (border removal) & Auto Crop & Straighten
     # ------------------------------------------------------------------
 
@@ -647,6 +685,7 @@ class MainWindow(QMainWindow):
         self.vertical_btn.setEnabled(not busy)
         self.horizontal_btn.setEnabled(not busy)
         self.grid_btn.setEnabled(not busy)
+        self.crop_rotate_btn.setEnabled(not busy)
         self.smart_crop_btn.setEnabled(not busy)
         self.crop_btn.setEnabled(not busy)
         self.progress_bar.setVisible(busy)
