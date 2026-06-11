@@ -1,0 +1,6 @@
+assets
+build
+dist
+temp
+*.jpg
+*__pycache__
