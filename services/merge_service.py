@@ -1,11 +1,15 @@
 import cv2
 import numpy as np
 from utils.logger import get_logger
+from services.stitching_engine import StitchingEngine
 
 logger = get_logger(__name__)
 
 
 class MergeService:
+
+    def __init__(self):
+        self._engine = StitchingEngine()
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -87,169 +91,21 @@ class MergeService:
 
     def merge_stitch(self, image_paths):
         """
-        Seamlessly stitch scanned document sections.
+        Professional seamless stitch using the full pipeline:
+          SIFT features → FLANN matching → RANSAC translation →
+          Exposure compensation → Optimal seam (DP) → Laplacian pyramid blend
 
-        Strategy
-        --------
-        1. Smart-crop each scan to remove scanner borders.
-        2. Detect whether sections are arranged horizontally or vertically
-           (compare aspect ratios and edge content).
-        3. Find the overlap zone using normalized cross-correlation.
-        4. Blend images at the seam with a gradient.
-
-        This is a TRANSLATION-ONLY stitch — no rotation, no perspective warp.
-        That is exactly correct for flat document scanning.
+        Same approach as Adobe Photoshop Photomerge (Reposition Only mode).
+        Works for any document type: newspapers, A4, books, certificates, maps.
         """
         images = self._load_images(image_paths)
-        logger.info(f"merge_stitch: {len(images)} images")
+        logger.info(f"merge_stitch: {len(images)} images — professional pipeline")
 
-        # Step 1: smart crop each image
+        # Smart-crop scanner borders first
         cropped = [self.smart_crop(img) for img in images]
 
-        # Step 2: detect direction (horizontal vs vertical)
-        direction = self._detect_direction(cropped)
-        logger.info(f"Detected stitch direction: {direction}")
-
-        # Step 3: stitch pairs in detected direction
-        result = cropped[0]
-        for i in range(1, len(cropped)):
-            if direction == "horizontal":
-                result = self._stitch_pair_h(result, cropped[i])
-            else:
-                result = self._stitch_pair_v(result, cropped[i])
-
-        return result
-
-    def _detect_direction(self, images):
-        """
-        Decide if images are arranged left→right (horizontal) or top→bottom (vertical).
-        Compares similarity of image RIGHT edge vs BOTTOM edge with next image's LEFT/TOP.
-        """
-        if len(images) < 2:
-            return "horizontal"
-
-        img1, img2 = images[0], images[1]
-        h1, w1 = img1.shape[:2]
-        h2, w2 = img2.shape[:2]
-
-        g1 = cv2.cvtColor(img1, cv2.COLOR_BGR2GRAY).astype(np.float32)
-        g2 = cv2.cvtColor(img2, cv2.COLOR_BGR2GRAY).astype(np.float32)
-
-        strip_size = 100
-        mid_y = slice(h1 // 4, 3 * h1 // 4)
-        mid_x = slice(w1 // 4, 3 * w1 // 4)
-
-        # Compare right edge of img1 vs left edge of img2
-        r1 = g1[mid_y, -strip_size:]
-        l2 = g2[mid_y, :strip_size]
-        h_score = self._ncc(r1, l2) if r1.shape == l2.shape else 0.0
-
-        # Compare bottom edge of img1 vs top edge of img2
-        b1 = g1[-strip_size:, mid_x]
-        t2 = g2[:strip_size, mid_x]
-        v_score = self._ncc(b1, t2) if b1.shape == t2.shape else 0.0
-
-        logger.info(f"Direction NCC — horizontal: {h_score:.3f}, vertical: {v_score:.3f}")
-        return "vertical" if v_score > h_score else "horizontal"
-
-    def _ncc(self, a, b):
-        """Normalized cross-correlation between two arrays."""
-        an = (a - a.mean()) / (a.std() + 1e-6)
-        bn = (b - b.mean()) / (b.std() + 1e-6)
-        return float((an * bn).mean())
-
-    def _find_overlap_h(self, img1, img2, min_pct=0.02, max_pct=0.6, step=4):
-        """Find best horizontal overlap in pixels using NCC on vertical strips."""
-        g1 = cv2.cvtColor(img1, cv2.COLOR_BGR2GRAY).astype(np.float32)
-        g2 = cv2.cvtColor(img2, cv2.COLOR_BGR2GRAY).astype(np.float32)
-        h1, w1 = img1.shape[:2]
-        h2, w2 = img2.shape[:2]
-
-        y_start = min(h1, h2) // 4
-        y_end   = 3 * min(h1, h2) // 4
-        min_ov  = max(5, int(min(w1, w2) * min_pct))
-        max_ov  = int(min(w1, w2) * max_pct)
-
-        best_score, best_ov = -999, 0
-        for ov in range(min_ov, max_ov, step):
-            s1 = g1[y_start:y_end, w1-ov:w1]
-            s2 = g2[y_start:y_end, :ov]
-            sc = self._ncc(s1, s2)
-            if sc > best_score:
-                best_score, best_ov = sc, ov
-
-        logger.info(f"Horizontal overlap: {best_ov}px (NCC={best_score:.4f})")
-        return best_ov
-
-    def _find_overlap_v(self, img1, img2, min_pct=0.02, max_pct=0.6, step=4):
-        """Find best vertical overlap in pixels using NCC on horizontal strips."""
-        g1 = cv2.cvtColor(img1, cv2.COLOR_BGR2GRAY).astype(np.float32)
-        g2 = cv2.cvtColor(img2, cv2.COLOR_BGR2GRAY).astype(np.float32)
-        h1, w1 = img1.shape[:2]
-        h2, w2 = img2.shape[:2]
-
-        x_start = min(w1, w2) // 4
-        x_end   = 3 * min(w1, w2) // 4
-        min_ov  = max(5, int(min(h1, h2) * min_pct))
-        max_ov  = int(min(h1, h2) * max_pct)
-
-        best_score, best_ov = -999, 0
-        for ov in range(min_ov, max_ov, step):
-            s1 = g1[h1-ov:h1, x_start:x_end]
-            s2 = g2[:ov, x_start:x_end]
-            sc = self._ncc(s1, s2)
-            if sc > best_score:
-                best_score, best_ov = sc, ov
-
-        logger.info(f"Vertical overlap: {best_ov}px (NCC={best_score:.4f})")
-        return best_ov
-
-    def _stitch_pair_h(self, img1, img2):
-        """Stitch two images horizontally with gradient blend at seam."""
-        h1, w1 = img1.shape[:2]
-        h2, w2 = img2.shape[:2]
-        overlap = self._find_overlap_h(img1, img2)
-
-        out_h = max(h1, h2)
-        out_w = w1 + w2 - overlap
-        result = np.full((out_h, out_w, 3), 255, dtype=np.uint8)
-
-        # Place img1
-        result[:h1, :w1] = img1
-
-        # Gradient blend at overlap zone
-        if overlap > 0:
-            blend_h = min(h1, h2)
-            alpha = np.linspace(1.0, 0.0, overlap, dtype=np.float32)[np.newaxis, :, np.newaxis]
-            z1 = img1[:blend_h, w1-overlap:w1].astype(np.float32)
-            z2 = img2[:blend_h, :overlap].astype(np.float32)
-            result[:blend_h, w1-overlap:w1] = (z1 * alpha + z2 * (1.0 - alpha)).astype(np.uint8)
-
-        # Place non-overlapping part of img2
-        result[:h2, w1:] = img2[:h2, overlap:]
-        return result
-
-    def _stitch_pair_v(self, img1, img2):
-        """Stitch two images vertically with gradient blend at seam."""
-        h1, w1 = img1.shape[:2]
-        h2, w2 = img2.shape[:2]
-        overlap = self._find_overlap_v(img1, img2)
-
-        out_w = max(w1, w2)
-        out_h = h1 + h2 - overlap
-        result = np.full((out_h, out_w, 3), 255, dtype=np.uint8)
-
-        result[:h1, :w1] = img1
-
-        if overlap > 0:
-            blend_w = min(w1, w2)
-            alpha = np.linspace(1.0, 0.0, overlap, dtype=np.float32)[:, np.newaxis, np.newaxis]
-            z1 = img1[h1-overlap:h1, :blend_w].astype(np.float32)
-            z2 = img2[:overlap, :blend_w].astype(np.float32)
-            result[h1-overlap:h1, :blend_w] = (z1 * alpha + z2 * (1.0 - alpha)).astype(np.uint8)
-
-        result[h1:, :w2] = img2[overlap:, :]
-        return result
+        # Stitch with the professional engine
+        return self._engine.stitch(cropped)
 
     # ------------------------------------------------------------------
     # Basic merges (kept for manual use)
